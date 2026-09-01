@@ -1,0 +1,134 @@
+{
+  "schedule_time": {
+    "description": "每日生成日程的时间 (HH:MM)",
+    "hint": "格式为 HH:MM。每天的这个时候生成日程",
+    "type": "string",
+    "default": "07:00"
+  },
+  "reference_history_days": {
+    "description": "生成时参考的历史日程天数",
+    "type": "int",
+    "slider": {
+      "min": 1,
+      "max": 7,
+      "step": 1
+    },
+    "default": 3
+  },
+  "reference_recent_count": {
+    "description": "生成时参考的近期会话数量",
+    "hint": "bot会从最近的会话中爬取聊天记录来辅助日程的生成, 设为 0 时，则不参考近期会话",
+    "type": "int",
+    "slider": {
+      "min": 0,
+      "max": 100,
+      "step": 1
+    },
+    "default": 10
+  },
+  "default_reference_umo": {
+    "description": "默认参考会话来源",
+    "hint": "留空则不使用默认参考会话。配置后，会作为定时生成日程或未指定会话来源时的兜底参考会话。填写格式：<bot>:<GroupMessage|FriendMessage>:id，例如 bot:GroupMessage:123456789。",
+    "type": "string",
+    "default": ""
+  },
+  "llm_provider": {
+    "description": "指定生成日程的 LLM 供应商",
+    "hint": "留空则使用当前正在使用的 LLM 供应商。",
+    "type": "string",
+    "_special": "select_provider",
+    "default": ""
+  },
+  "pool": {
+    "description": "创意池",
+    "hint": "每次生成日程时，各个池会随机选择一个来并入日程生成提示词",
+    "type": "object",
+    "items": {
+      "daily_themes": {
+        "description": "今日主题池",
+        "type": "list",
+        "default": [
+          "探索日",
+          "社交日",
+          "宅家日",
+          "工作日",
+          "自我提升日",
+          "休闲放松日",
+          "创意日",
+          "运动日",
+          "整理日",
+          "美食日",
+          "文艺日",
+          "随性漫游日"
+        ]
+      },
+      "mood_colors": {
+        "description": "心情色彩池",
+        "type": "list",
+        "default": [
+          "慵懒",
+          "活力",
+          "优雅",
+          "俏皮",
+          "神秘",
+          "温柔",
+          "冷艳",
+          "甜美",
+          "知性",
+          "随性",
+          "浪漫",
+          "清新"
+        ]
+      },
+      "outfit_styles": {
+        "description": "穿搭风格池",
+        "type": "list",
+        "default": [
+          "知性学院风",
+          "街头休闲风",
+          "温柔淑女风",
+          "酷飒中性风",
+          "慵懒居家风",
+          "精致约会风",
+          "运动活力风",
+          "日系森女风",
+          "法式优雅风",
+          "韩系甜美风",
+          "复古文艺风",
+          "极简都市风",
+          "甜酷混搭风",
+          "民族风情风",
+          "暗黑系风格"
+        ]
+      },
+      "schedule_types": {
+        "description": "日程类型池",
+        "type": "list",
+        "default": [
+          "户外活动型",
+          "社交聚会型",
+          "独处充电型",
+          "技能学习型",
+          "随性漫游型",
+          "家务整理型",
+          "工作专注型",
+          "休闲娱乐型",
+          "健身运动型",
+          "美食探索型",
+          "文化艺术型",
+          "购物采买型"
+        ]
+      }
+    }
+  },
+  "prompt_template": {
+    "description": "LLM 生成日程的完整 Prompt 模板",
+    "hint":"插件内部支持格式化的占位符有： {date_str}、{weekday}、{holiday}、{persona_desc}、{daily_theme}、{mood_color}、{outfit_style}、{schedule_type}、{history_schedules}、{recent_chats}。{r1} {r2} … 等 {rN} 格式会被自动替换为 1-100 的独立随机数。其他占位符默认会被替换为空字符串。清空可恢复默认。",
+    "type": "text",
+    "obvious_hint": true,
+    "editor_mode": true,
+    "editor_language": "markdown",
+    "editor_theme": "vs-dark",
+    "default": "# Role: Life Companion\n请根据以下信息，为自己规划一份今天可执行、前后连贯的生活安排。\n\n## Context\n- 日期：{date_str} {weekday} {holiday}\n- 人设：{persona_desc}\n\n## 今日创意约束（必须遵循）\n- 今日主题：【{daily_theme}】\n- 心情色彩：【{mood_color}】\n- 穿搭风格（必须严格遵循）：【{outfit_style}】\n- 日程类型：【{schedule_type}】\n\n## 需要避免的重复内容\n{history_schedules}\n\n## 参考信息\n{recent_chats}\n\n## 强制约束\n- 用户没有另外指定时，严格遵循穿搭风格：【{outfit_style}】。\n- 只输出 JSON 对象本体，不要 Markdown、代码块或解释。\n- JSON 必须包含 outfit_style、outfit、schedule、timeline、image_prompt 五个字段。\n- outfit_style 必须严格等于 \"{outfit_style}\"，outfit 第一行必须以 \"风格：{outfit_style}\" 开头。\n- timeline 是按时间升序排列的数组，每项包含 time（HH:MM）和 activity，可选 location、mood、image_hint；安排 4-8 项。\n- image_prompt 是给参考照自拍/生活照使用的中文画面提示词，不要改变人物身份，不要加入水印或文字。\n\n## Tasks\n1. outfit：描述完整穿搭，符合天气、心情和活动。\n2. schedule：用自然语言概括全天安排。\n3. timeline：把 schedule 拆成 4-8 个带时间点的可执行活动。\n4. image_prompt：生成能体现今日穿搭和主要活动场景的生活照提示词。\n\n## Output Format\n请严格返回 JSON：\n{{\n  \"outfit_style\": \"{outfit_style}\",\n  \"outfit\": \"风格：{outfit_style}\\n...\",\n  \"schedule\": \"...\",\n  \"timeline\": [{{\"time\": \"08:00\", \"activity\": \"...\", \"location\": \"...\", \"mood\": \"...\", \"image_hint\": \"...\"}}],\n  \"image_prompt\": \"...\"\n}}"
+  }
+}

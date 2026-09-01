@@ -1,0 +1,103 @@
+--- AstrBot/data/plugins/astrbot_plugin_gitee_aiimg/main.py
++++ AstrBot/data/plugins/astrbot_plugin_gitee_aiimg/main.py
+@@ -6549,27 +6549,34 @@
+         """
+         get_registered_star = getattr(self.context, "get_registered_star", None)
+         if not callable(get_registered_star):
+-            return {}
+-        try:
+-            metadata = get_registered_star("astrbot_plugin_life_scheduler")
+-            life_scheduler = getattr(metadata, "star_cls", None)
+-            get_context = getattr(life_scheduler, "get_life_context", None)
+-            if not callable(get_context):
+-                return {}
+-            result = get_context(allow_generate=False)
+-            if inspect.isawaitable(result):
+-                result = await result
+-            return result if isinstance(result, dict) else {}
+-        except TypeError:
+-            # Never retry without the keyword: older implementations may invoke
+-            # the LLM whenever their cache is empty.
+-            logger.debug(
+-                "[selfie] life_scheduler does not support read-only context access"
+-            )
+             return {}
+-        except Exception as exc:
+-            logger.debug("[selfie] life_scheduler context unavailable: %s", exc)
+-            return {}
++        for plugin_name in (
++            "astrbot_plugin_life_companion",
++            "astrbot_plugin_life_scheduler",
++        ):
++            try:
++                metadata = get_registered_star(plugin_name)
++                life_plugin = getattr(metadata, "star_cls", None)
++                get_context = getattr(life_plugin, "get_life_context", None)
++                if not callable(get_context):
++                    continue
++                result = get_context(allow_generate=False)
++                if inspect.isawaitable(result):
++                    result = await result
++                if isinstance(result, dict):
++                    return result
++            except TypeError:
++                # Do not retry without the keyword: legacy APIs may generate
++                # an LLM schedule when their cache is empty.
++                logger.debug(
++                    "[selfie] %s does not support read-only context access",
++                    plugin_name,
++                )
++            except Exception as exc:
++                logger.debug(
++                    "[selfie] %s context unavailable: %s", plugin_name, exc
++                )
++        return {}
+ 
+     def _build_selfie_prompt(
+         self,
+@@ -6593,15 +6600,40 @@
+         life_context = life_context if isinstance(life_context, dict) else {}
+         outfit = str(life_context.get("outfit") or "").strip()
+         schedule = str(life_context.get("schedule") or "").strip()
++        timeline = life_context.get("timeline")
++        image_prompt = str(life_context.get("image_prompt") or "").strip()
+         life_context_note = ""
+-        if outfit or schedule:
+-            life_context_note = (
+-                "\n\n今日生活状态（仅作为默认背景；用户本次明确要求优先）：\n"
+-                f"- 今日穿搭：{outfit or '未记录'}\n"
+-                f"- 今日日程：{schedule or '未记录'}\n"
++        if outfit or schedule or timeline or image_prompt:
++            timeline_lines = []
++            if isinstance(timeline, list):
++                for item in timeline[:12]:
++                    if not isinstance(item, dict):
++                        continue
++                    time_value = str(item.get("time") or "").strip()
++                    activity = str(item.get("activity") or "").strip()
++                    if time_value and activity:
++                        location = str(item.get("location") or "").strip()
++                        suffix = f"（{location}）" if location else ""
++                        timeline_lines.append(
++                            f"{time_value} {activity}{suffix}"
++                        )
++            life_context_lines = [
++                "\n\n今日生活状态（仅作为默认背景；用户本次明确要求优先）：",
++                f"- 今日穿搭：{outfit or '未记录'}",
++                f"- 今日日程：{schedule or '未记录'}",
++            ]
++            if timeline_lines:
++                life_context_lines.append("- 今日时间线：")
++                life_context_lines.extend(timeline_lines)
++            if image_prompt:
++                life_context_lines.append(
++                    f"- 今日生活照画面参考：{image_prompt[:800]}"
++                )
++            life_context_lines.append(
+                 "如果用户没有指定其它穿搭或场景，应让画面自然体现上述状态；"
+                 "用户明确指定的内容不得被这份状态覆盖。"
+             )
++            life_context_note = "\n".join(life_context_lines)
+         capture_policy = (
+             "拍摄设备一致性（不得改变用户指定的拍摄视角）：普通手持自拍或前置摄像头自拍时，"
+             "拍摄设备位于画面外，不要在成片中额外生成手机、屏幕或相机界面；"

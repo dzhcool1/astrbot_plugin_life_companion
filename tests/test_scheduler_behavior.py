@@ -1,0 +1,691 @@
+import datetime
+import re
+import sys
+import tempfile
+import types
+import unittest
+from pathlib import Path
+from unittest.mock import patch
+
+
+class _Logger:
+    def debug(self, *args, **kwargs):
+        pass
+
+    def info(self, *args, **kwargs):
+        pass
+
+    def warning(self, *args, **kwargs):
+        pass
+
+    def error(self, *args, **kwargs):
+        pass
+
+
+def _install_astrbot_stubs():
+    modules = {
+        "astrbot": types.ModuleType("astrbot"),
+        "astrbot.api": types.ModuleType("astrbot.api"),
+        "astrbot.api.all": types.ModuleType("astrbot.api.all"),
+        "astrbot.api.event": types.ModuleType("astrbot.api.event"),
+        "astrbot.core": types.ModuleType("astrbot.core"),
+        "astrbot.core.config": types.ModuleType("astrbot.core.config"),
+        "astrbot.core.config.astrbot_config": types.ModuleType(
+            "astrbot.core.config.astrbot_config"
+        ),
+        "astrbot.core.star": types.ModuleType("astrbot.core.star"),
+        "astrbot.core.star.context": types.ModuleType("astrbot.core.star.context"),
+        "astrbot.core.star.star_tools": types.ModuleType(
+            "astrbot.core.star.star_tools"
+        ),
+        "astrbot.core.provider": types.ModuleType("astrbot.core.provider"),
+        "astrbot.core.provider.entities": types.ModuleType(
+            "astrbot.core.provider.entities"
+        ),
+        "apscheduler": types.ModuleType("apscheduler"),
+        "apscheduler.executors": types.ModuleType("apscheduler.executors"),
+        "apscheduler.executors.asyncio": types.ModuleType(
+            "apscheduler.executors.asyncio"
+        ),
+        "apscheduler.schedulers": types.ModuleType("apscheduler.schedulers"),
+        "apscheduler.schedulers.asyncio": types.ModuleType(
+            "apscheduler.schedulers.asyncio"
+        ),
+    }
+    modules["astrbot.api"].logger = _Logger()
+    modules["astrbot.api.all"].Context = object
+    modules["astrbot.api.all"].Star = object
+    modules["astrbot.api.event"].AstrMessageEvent = object
+    class _Filter:
+        class PermissionType:
+            ADMIN = "admin"
+
+        @staticmethod
+        def _identity(*args, **kwargs):
+            def decorator(func):
+                return func
+
+            return decorator
+
+        command = _identity
+        permission_type = _identity
+        on_llm_request = _identity
+
+    modules["astrbot.api.event"].filter = _Filter
+    modules["astrbot.core.config.astrbot_config"].AstrBotConfig = dict
+    modules["astrbot.core.star.context"].Context = object
+    modules["astrbot.core.star.star_tools"].StarTools = object
+    modules["astrbot.core.provider.entities"].ProviderRequest = object
+    class _AsyncIOExecutor:
+        pass
+
+    class _AsyncIOScheduler:
+        def __init__(self, *args, **kwargs):
+            self.running = False
+
+    modules["apscheduler.executors.asyncio"].AsyncIOExecutor = _AsyncIOExecutor
+    modules["apscheduler.schedulers.asyncio"].AsyncIOScheduler = _AsyncIOScheduler
+    sys.modules.update(modules)
+
+
+_install_astrbot_stubs()
+
+from core.data import ScheduleData, ScheduleDataManager, normalize_timeline  # noqa: E402
+from core.generator import ScheduleContext, SchedulerGenerator  # noqa: E402
+from core.utils import build_character_state_injection, select_current_activity  # noqa: E402
+
+
+class _ConversationManager:
+    async def get_curr_conversation_id(self, umo):
+        return None
+
+    async def delete_conversation(self, sid, cid):
+        pass
+
+
+class _PersonaManager:
+    async def get_default_persona_v3(self):
+        return {"prompt": "你是一个测试人格。"}
+
+
+class _Provider:
+    def __init__(self, responses):
+        self.responses = list(responses)
+        self.prompts = []
+
+    async def text_chat(self, prompt, session_id):
+        self.prompts.append(prompt)
+        text = self.responses.pop(0) if self.responses else ""
+        return types.SimpleNamespace(completion_text=text)
+
+
+class _Context:
+    def __init__(self, provider):
+        self.provider = provider
+        self.conversation_manager = _ConversationManager()
+        self.persona_manager = _PersonaManager()
+
+    def get_provider_by_id(self, provider_id):
+        return None
+
+    def get_using_provider(self):
+        return self.provider
+
+
+class _ConfigDict(dict):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.saved = False
+
+    def save_config(self):
+        self.saved = True
+
+
+def _config():
+    return {
+        "reference_history_days": 3,
+        "reference_recent_count": 0,
+        "default_reference_umo": "",
+        "llm_provider": "",
+        "pool": {
+            "daily_themes": ["探索日"],
+            "mood_colors": ["活力"],
+            "outfit_styles": ["甜酷混搭风"],
+            "schedule_types": ["户外活动型"],
+        },
+        "prompt_template": (
+            "# Role: Life Scheduler\n"
+            "- 穿搭风格（必须严格遵循）：【{outfit_style}】\n"
+            "- 日程类型：【{schedule_type}】\n"
+            "请严格返回 JSON：\n"
+            "{{\n"
+            '  "outfit_style": "{outfit_style}",\n'
+            '  "outfit": "...",\n'
+            '  "schedule": "..."\n'
+            "}}"
+        ),
+    }
+
+
+def _ctx():
+    return ScheduleContext(
+        date_str="2026年05月24日",
+        weekday="星期日",
+        holiday="",
+        persona_desc="测试人格",
+        history_schedules="（无历史记录）",
+        recent_chats="无近期对话",
+        daily_theme="探索日",
+        mood_color="活力",
+        outfit_style="甜酷混搭风",
+        schedule_type="户外活动型",
+    )
+
+
+class SchedulerBehaviorTest(unittest.IsolatedAsyncioTestCase):
+    def _generator(self, responses=()):
+        self.tmp = tempfile.TemporaryDirectory()
+        data_mgr = ScheduleDataManager(Path(self.tmp.name) / "schedule_data.json")
+        provider = _Provider(responses)
+        return SchedulerGenerator(_Context(provider), _config(), data_mgr), provider
+
+    def tearDown(self):
+        tmp = getattr(self, "tmp", None)
+        if tmp:
+            tmp.cleanup()
+
+    def test_manual_extra_has_highest_priority_and_skips_style_validation(self):
+        generator, _ = self._generator()
+        prompt = generator._build_prompt(_ctx(), "穿黑丝和吊带裙")
+
+        self.assertIn("用户补充要求：穿黑丝和吊带裙", prompt)
+        self.assertIn("最高优先级", prompt)
+        self.assertIn("不得忽略、替换、弱化", prompt)
+        self.assertIn('"outfit_style": "用户指定"', prompt)
+
+        payload = {"outfit": "黑丝和吊带裙", "schedule": "下午去喝茶"}
+        ok, reason = generator._validate_payload(
+            payload,
+            _ctx(),
+            enforce_style=False,
+            manual_extra="穿黑丝和吊带裙",
+        )
+        self.assertTrue(ok, reason)
+
+        bad_payload = {"outfit": "白色T恤", "schedule": "下午去喝茶"}
+        ok, reason = generator._validate_payload(
+            bad_payload,
+            _ctx(),
+            enforce_style=False,
+            manual_extra="穿黑丝和吊带裙",
+        )
+        self.assertFalse(ok)
+        self.assertIn("黑丝", reason)
+
+        style_only_payload = {
+            "outfit_style": "黑丝吊带裙",
+            "outfit": "白色T恤",
+            "schedule": "下午去喝茶",
+        }
+        ok, reason = generator._validate_payload(
+            style_only_payload,
+            _ctx(),
+            enforce_style=False,
+            manual_extra="穿黑丝和吊带裙",
+        )
+        self.assertFalse(ok)
+        self.assertIn("穿搭缺少", reason)
+
+        data = generator._to_schedule_data(
+            payload,
+            "2026-05-24",
+            _ctx(),
+            manual_extra="穿黑丝和吊带裙",
+        )
+        self.assertEqual(data.outfit_style, "用户指定")
+
+        data = generator._to_schedule_data(
+            dict(payload, outfit_style="甜酷混搭风"),
+            "2026-05-24",
+            _ctx(),
+            manual_extra="穿黑丝和吊带裙",
+        )
+        self.assertEqual(data.outfit_style, "用户指定")
+
+    def test_prompt_rendering_survives_crlf_and_literal_json_braces(self):
+        generator, _ = self._generator()
+        generator.config["prompt_template"] = (
+            "# Role: Life Scheduler\r\n"
+            "## Output\r\n"
+            "{\r\n"
+            '  "outfit_style": "{outfit_style}",\r\n'
+            '  "outfit": "...",\r\n'
+            '  "schedule": "..."\r\n'
+            "}\r\n"
+            "## Recent Chats\r\n"
+            "{recent_chats}\r\n"
+        )
+
+        prompt = generator._build_prompt(_ctx())
+
+        self.assertIn('"outfit_style": "甜酷混搭风"', prompt)
+        self.assertIn("## Recent Chats", prompt)
+
+    def test_empty_prompt_template_falls_back_to_default(self):
+        tmp = tempfile.TemporaryDirectory()
+        try:
+            data_mgr = ScheduleDataManager(Path(tmp.name) / "schedule_data.json")
+            config = _ConfigDict(_config())
+            config["prompt_template"] = ""
+            generator = SchedulerGenerator(_Context(_Provider([])), config, data_mgr)
+
+            self.assertTrue(config.saved)
+            self.assertIn("# Role: Life Companion", config["prompt_template"])
+            prompt = generator._build_prompt(_ctx())
+
+            self.assertIn("# Role: Life Companion", prompt)
+            self.assertIn("## Context", prompt)
+            self.assertIn("## Output Format", prompt)
+        finally:
+            tmp.cleanup()
+
+    def test_build_prompt_replaces_rN_with_random_integers(self):
+        generator, _ = self._generator()
+        generator.config["prompt_template"] = (
+            "r1={r1} r2={r2} r99={r99}\n"
+            "style={outfit_style}\n"
+        )
+        prompt = generator._build_prompt(_ctx())
+
+        m1 = re.search(r"r1=(\d+)", prompt)
+        self.assertIsNotNone(m1)
+        self.assertTrue(1 <= int(m1.group(1)) <= 100, f"r1={m1.group(1)}")
+
+        m2 = re.search(r"r2=(\d+)", prompt)
+        self.assertIsNotNone(m2)
+        self.assertTrue(1 <= int(m2.group(1)) <= 100, f"r2={m2.group(1)}")
+
+        m99 = re.search(r"r99=(\d+)", prompt)
+        self.assertIsNotNone(m99)
+        self.assertTrue(1 <= int(m99.group(1)) <= 100, f"r99={m99.group(1)}")
+
+        self.assertIn("甜酷混搭风", prompt)
+
+    def test_rN_placeholders_are_independent(self):
+        generator, _ = self._generator()
+        generator.config["prompt_template"] = "{r1}-{r2}\n"
+
+        seen_pairs = set()
+        for _ in range(10):
+            prompt = generator._build_prompt(_ctx()).strip()
+            pair = tuple(prompt.split("-", 1))
+            seen_pairs.add(pair)
+
+        self.assertGreaterEqual(len(seen_pairs), 2,
+                                "Expected r1/r2 to vary independently in 10 runs")
+
+    def test_manual_extra_supports_negative_constraints(self):
+        generator, _ = self._generator()
+        ok, reason = generator._validate_payload(
+            {"outfit": "居家睡裙", "schedule": "不出门，在家看书"},
+            _ctx(),
+            enforce_style=False,
+            manual_extra="不要出门",
+        )
+        self.assertTrue(ok, reason)
+
+        ok, reason = generator._validate_payload(
+            {"outfit": "休闲装", "schedule": "下午出门散步"},
+            _ctx(),
+            enforce_style=False,
+            manual_extra="不要出门",
+        )
+        self.assertFalse(ok)
+        self.assertIn("避免", reason)
+
+        ok, reason = generator._validate_payload(
+            {"outfit": "居家睡裙", "schedule": "今天不要再出门，在家看书"},
+            _ctx(),
+            enforce_style=False,
+            manual_extra="不要再出门",
+        )
+        self.assertTrue(ok, reason)
+
+    def test_manual_extra_splits_mixed_outfit_and_schedule_terms(self):
+        generator, _ = self._generator()
+        ok, reason = generator._validate_payload(
+            {"outfit": "黑丝和吊带裙", "schedule": "下午茶"},
+            _ctx(),
+            enforce_style=False,
+            manual_extra="穿黑丝和吊带裙去下午茶",
+        )
+        self.assertTrue(ok, reason)
+
+    def test_manual_extra_splits_reversed_activity_and_outfit_terms(self):
+        generator, _ = self._generator()
+        ok, reason = generator._validate_payload(
+            {"outfit": "黑丝和吊带裙", "schedule": "下午茶"},
+            _ctx(),
+            enforce_style=False,
+            manual_extra="去下午茶穿黑丝和吊带裙",
+        )
+        self.assertTrue(ok, reason)
+
+        ok, reason = generator._validate_payload(
+            {"outfit": "吊带裙", "schedule": "下午茶"},
+            _ctx(),
+            enforce_style=False,
+            manual_extra="去下午茶穿黑丝和吊带裙",
+        )
+        self.assertFalse(ok)
+        self.assertIn("黑丝", reason)
+
+    def test_manual_extra_matches_compact_outfit_terms(self):
+        generator, _ = self._generator()
+        ok, reason = generator._validate_payload(
+            {"outfit": "黑丝搭配吊带裙", "schedule": "下午在家看书"},
+            _ctx(),
+            enforce_style=False,
+            manual_extra="穿黑丝吊带裙",
+        )
+        self.assertTrue(ok, reason)
+
+        ok, reason = generator._validate_payload(
+            {"outfit": "黑丝搭配短裙", "schedule": "下午在家看书"},
+            _ctx(),
+            enforce_style=False,
+            manual_extra="穿黑丝吊带裙",
+        )
+        self.assertFalse(ok)
+        self.assertIn("吊带裙", reason)
+
+    def test_manual_extra_matches_activity_keyword_not_exact_phrase(self):
+        generator, _ = self._generator()
+        ok, reason = generator._validate_payload(
+            {"outfit": "休闲裙", "schedule": "15:00 去店里享用下午茶"},
+            _ctx(),
+            enforce_style=False,
+            manual_extra="喝下午茶",
+        )
+        self.assertTrue(ok, reason)
+
+    def test_normal_generation_keeps_random_style_validation(self):
+        generator, _ = self._generator()
+        payload = {
+            "outfit_style": "甜酷混搭风",
+            "outfit": "风格：甜酷混搭风\n黑色短外套搭配短裙。",
+            "schedule": "09:30 出门散步",
+        }
+        ok, reason = generator._validate_payload(payload, _ctx())
+        self.assertTrue(ok, reason)
+
+        bad_payload = dict(payload, outfit_style="法式优雅风")
+        ok, reason = generator._validate_payload(bad_payload, _ctx())
+        self.assertFalse(ok)
+        self.assertIn("outfit_style", reason)
+
+    def test_select_current_activity_uses_latest_started_entry(self):
+        schedule = (
+            "☀️ 上午\n"
+            "- 08:00 起床洗漱\n"
+            "- 09:30 出门去咖啡店看书\n"
+            "- 14:00 去逛街\n"
+        )
+        now = datetime.datetime(2026, 5, 24, 9, 38)
+        self.assertEqual(
+            select_current_activity(schedule, now=now),
+            "09:30 出门去咖啡店看书",
+        )
+
+    def test_select_current_activity_accepts_common_chinese_prefixes(self):
+        schedule = (
+            "☀️ 上午 8:00 起床洗漱\n"
+            "🌤 午后 12点30 出门喝柠檬茶\n"
+            "晚上 20:00 回家整理照片\n"
+        )
+        now = datetime.datetime(2026, 5, 24, 12, 45)
+        self.assertEqual(
+            select_current_activity(schedule, now=now),
+            "12:30 出门喝柠檬茶",
+        )
+
+    def test_select_current_activity_accepts_half_hour_cn_time(self):
+        schedule = (
+            "上午 9点半 出门去咖啡店看书\n"
+            "晚上 20点 回家整理照片\n"
+        )
+        now = datetime.datetime(2026, 5, 24, 9, 45)
+        self.assertEqual(
+            select_current_activity(schedule, now=now),
+            "09:30 出门去咖啡店看书",
+        )
+
+    def test_select_current_activity_accepts_numbered_items(self):
+        schedule = (
+            "1. 08:00 起床洗漱\n"
+            "2、09:30 出门去咖啡店看书\n"
+        )
+        now = datetime.datetime(2026, 5, 24, 9, 45)
+        self.assertEqual(
+            select_current_activity(schedule, now=now),
+            "09:30 出门去咖啡店看书",
+        )
+
+    def test_select_current_activity_wraps_to_previous_day_when_needed(self):
+        schedule = (
+            "- 08:00 起床洗漱\n"
+            "- 23:00 窝在被子里看电影\n"
+        )
+        now = datetime.datetime(2026, 5, 25, 2, 10)
+        self.assertEqual(
+            select_current_activity(schedule, now=now, wrap_previous_day=True),
+            "23:00 窝在被子里看电影",
+        )
+        self.assertEqual(
+            select_current_activity(schedule, now=now, wrap_previous_day=False),
+            "08:00 起床洗漱",
+        )
+
+    async def test_collect_context_uses_default_reference_umo_when_event_missing(self):
+        generator, _ = self._generator()
+        generator.config["default_reference_umo"] = "default-umo"
+
+        seen = {}
+
+        async def fake_get_recent_chats(umo, count=None):
+            seen["umo"] = umo
+            return f"recent:{umo}"
+
+        generator._get_recent_chats = fake_get_recent_chats
+
+        ctx = await generator._collect_context(datetime.datetime(2026, 5, 24), None)
+
+        self.assertEqual(seen["umo"], "default-umo")
+        self.assertEqual(ctx.recent_chats, "recent:default-umo")
+
+    async def test_collect_context_logs_effective_umo(self):
+        generator, _ = self._generator()
+        generator.config["default_reference_umo"] = "default-umo"
+
+        async def fake_get_recent_chats(umo, count=None):
+            return f"recent:{umo}"
+
+        generator._get_recent_chats = fake_get_recent_chats
+
+        with patch("core.generator.logger.debug") as mock_debug:
+            await generator._collect_context(datetime.datetime(2026, 5, 24), None)
+
+        mock_debug.assert_any_call("[LLM] UMO 上下文注入：default-umo")
+
+    async def test_collect_context_prefers_explicit_umo_over_default_reference(self):
+        generator, _ = self._generator()
+        generator.config["default_reference_umo"] = "default-umo"
+
+        seen = {}
+
+        async def fake_get_recent_chats(umo, count=None):
+            seen["umo"] = umo
+            return f"recent:{umo}"
+
+        generator._get_recent_chats = fake_get_recent_chats
+
+        ctx = await generator._collect_context(
+            datetime.datetime(2026, 5, 24), "event-umo"
+        )
+
+        self.assertEqual(seen["umo"], "event-umo")
+        self.assertEqual(ctx.recent_chats, "recent:event-umo")
+
+    async def test_collect_context_keeps_empty_reference_behavior_when_not_configured(self):
+        generator, _ = self._generator()
+
+        ctx = await generator._collect_context(datetime.datetime(2026, 5, 24), None)
+
+        self.assertEqual(ctx.recent_chats, "无近期对话")
+
+    def test_character_state_injection_includes_current_activity(self):
+        schedule = (
+            "- 08:00 起床洗漱\n"
+            "- 09:30 出门去咖啡店看书\n"
+            "- 14:00 去逛街\n"
+        )
+        inject_text = build_character_state_injection(
+            "黑丝和吊带裙",
+            schedule,
+            now=datetime.datetime(2026, 5, 24, 9, 38),
+            business_now=datetime.datetime(2026, 5, 24, 9, 38),
+        )
+
+        self.assertIn("当前状态: 09:30 出门去咖啡店看书", inject_text)
+        self.assertIn("今日日程: " + schedule, inject_text)
+        self.assertIn("必须以 <character_state> 为准", inject_text)
+
+    def test_character_state_injection_falls_back_for_plain_schedule(self):
+        inject_text = build_character_state_injection(
+            "居家裙",
+            "上午整理房间，下午在家看书。",
+            now=datetime.datetime(2026, 5, 24, 15, 0),
+        )
+
+        self.assertIn("当前状态: 未解析到具体时间点", inject_text)
+        self.assertIn("今日日程: 上午整理房间，下午在家看书。", inject_text)
+
+    async def test_manual_extra_repairs_when_output_ignores_requirement(self):
+        generator, provider = self._generator(
+            [
+                '{"outfit_style":"用户指定","outfit":"白色T恤","schedule":"下午去喝茶"}',
+                (
+                    '{"outfit_style":"用户指定",'
+                    '"outfit":"黑丝和吊带裙",'
+                    '"schedule":"下午穿黑丝和吊带裙去喝茶"}'
+                ),
+            ]
+        )
+        data = await generator.generate_schedule(
+            datetime.datetime(2026, 5, 24),
+            None,
+            extra="穿黑丝和吊带裙",
+        )
+
+        self.assertEqual(data.status, "ok")
+        self.assertEqual(data.outfit_style, "用户指定")
+        self.assertIn("黑丝", data.outfit)
+        self.assertEqual(len(provider.prompts), 2)
+
+    async def test_empty_completion_retries_once_then_succeeds(self):
+        generator, provider = self._generator(
+            [
+                "",
+                (
+                    '{"outfit_style":"甜酷混搭风",'
+                    '"outfit":"风格：甜酷混搭风\\n黑色短外套搭配短裙。",'
+                    '"schedule":"09:30 出门散步"}'
+                ),
+            ]
+        )
+        data = await generator.generate_schedule(datetime.datetime(2026, 5, 24), None)
+
+        self.assertEqual(data.status, "ok")
+        self.assertEqual(len(provider.prompts), 2)
+
+    async def test_empty_completion_returns_failed_schedule(self):
+        generator, provider = self._generator(["", ""])
+        data = await generator.generate_schedule(datetime.datetime(2026, 5, 24), None)
+
+        self.assertEqual(data.status, "failed")
+        self.assertEqual(len(provider.prompts), 2)
+
+    def test_timeline_is_normalized_and_sorted_for_external_plugins(self):
+        timeline = normalize_timeline(
+            [
+                {"time": "9:30", "activity": "咖啡店看书", "location": "街角咖啡店"},
+                {"time": "invalid", "activity": "忽略"},
+                {"time": "08：00", "title": "起床洗漱"},
+            ]
+        )
+        self.assertEqual(
+            timeline,
+            [
+                {"time": "08:00", "activity": "起床洗漱"},
+                {
+                    "time": "09:30",
+                    "activity": "咖啡店看书",
+                    "location": "街角咖啡店",
+                },
+            ],
+        )
+
+    def test_schedule_history_keeps_previous_version_and_can_restore(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            manager = ScheduleDataManager(Path(tmp) / "schedule_data.json")
+            first = ScheduleData(
+                date="2026-05-24", outfit="第一套", schedule="上午散步"
+            )
+            second = ScheduleData(
+                date="2026-05-24", outfit="第二套", schedule="下午看书"
+            )
+            manager.set(first)
+            manager.set(second)
+
+            self.assertEqual(manager.history("2026-05-24")[0].outfit, "第一套")
+            restored = manager.restore("2026-05-24")
+            self.assertIsNotNone(restored)
+            self.assertEqual(manager.get("2026-05-24").outfit, "第一套")
+            self.assertEqual(manager.get("2026-05-24").source, "rollback")
+
+    def test_import_supports_old_schedule_shape_without_overwriting(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            source = root / "old.json"
+            source.write_text(
+                '{"2026-05-24": {"outfit": "旧穿搭", "schedule": "旧日程"}}',
+                encoding="utf-8",
+            )
+            manager = ScheduleDataManager(root / "schedule_data.json")
+            self.assertEqual(manager.import_file(source), 1)
+            self.assertEqual(manager.get("2026-05-24").source, "import")
+            self.assertEqual(manager.import_file(source), 0)
+
+    async def test_read_only_life_context_does_not_generate_when_cache_is_empty(self):
+        sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+        from astrbot_plugin_life_companion.main import LifeCompanionPlugin
+
+        plugin = object.__new__(LifeCompanionPlugin)
+        plugin.data_mgr = ScheduleDataManager(Path(tempfile.mkdtemp()) / "data.json")
+        called = False
+
+        class _Generator:
+            async def generate_schedule(self, *args, **kwargs):
+                nonlocal called
+                called = True
+                return None
+
+        plugin.generator = _Generator()
+        plugin.config = {"schedule_time": "07:00"}
+        result = await plugin.get_life_context(allow_generate=False)
+        self.assertEqual(result, {})
+        self.assertFalse(called)
+
+
+if __name__ == "__main__":
+    unittest.main()
