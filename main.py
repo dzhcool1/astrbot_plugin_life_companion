@@ -14,7 +14,10 @@ from .core.generator import SchedulerGenerator
 from .core.schedule import LifeCompanionScheduler
 from .core.utils import (
     build_character_state_injection,
+    get_outfit_period,
     resolve_business_now,
+    outfits_to_text,
+    select_current_outfit,
     select_current_activity,
     timeline_to_text,
 )
@@ -89,17 +92,25 @@ class LifeCompanionPlugin(Star):
         if not data or data.status == "failed":
             return {}
 
+        now = datetime.datetime.now()
         current_activity = select_current_activity(
             data.schedule,
-            now=datetime.datetime.now(),
+            now=now,
             timeline=data.timeline,
         )
+        current_period = get_outfit_period(now.hour)
+        current_outfit = select_current_outfit(data.outfits, data.outfit, now=now)
+        image_prompt = data.image_prompt
+        if image_prompt:
+            image_prompt += f"\n当前时段穿搭：{current_outfit}"
         return {
             "date": data.date,
-            "outfit": data.outfit,
+            "outfit": current_outfit,
+            "outfits": data.outfits,
+            "current_outfit_period": current_period,
             "schedule": data.schedule,
             "timeline": data.timeline,
-            "image_prompt": data.image_prompt,
+            "image_prompt": image_prompt,
             "current_activity": current_activity,
             "meta": {
                 "style": data.outfit_style,
@@ -125,6 +136,7 @@ class LifeCompanionPlugin(Star):
         inject_text = build_character_state_injection(
             data.outfit,
             data.schedule,
+            outfits=data.outfits,
             timeline=data.timeline,
             business_now=business_now,
         )
@@ -145,10 +157,14 @@ class LifeCompanionPlugin(Star):
 
     @staticmethod
     def _format_data(data: ScheduleData) -> str:
+        period_outfits = outfits_to_text(data.outfits)
         lines = [
             f"📅 {data.date}",
-            f"👗 今日穿搭：{data.outfit}",
         ]
+        if period_outfits:
+            lines.append(f"👗 分时段穿搭：\n{period_outfits}")
+        else:
+            lines.append(f"👗 今日穿搭：{data.outfit}")
         timeline = timeline_to_text(data.timeline)
         if timeline:
             lines.append(f"🕘 时间线：\n{timeline}")

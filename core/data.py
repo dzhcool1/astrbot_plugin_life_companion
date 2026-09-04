@@ -11,6 +11,14 @@ from typing import Any, Literal, Union
 
 ScheduleStatus = Literal["ok", "failed", "manual"]
 
+OUTFIT_PERIODS = ("morning", "noon", "afternoon", "evening")
+OUTFIT_PERIOD_LABELS = {
+    "morning": "早上",
+    "noon": "中午",
+    "afternoon": "下午",
+    "evening": "晚上",
+}
+
 DateLike = Union[  # noqa: UP007
     datetime.datetime,
     datetime.date,
@@ -39,6 +47,48 @@ def to_date_str(value: DateLike) -> str:
     raise TypeError(f"Unsupported date type: {type(value)}")
 
 
+def normalize_outfits(value: Any) -> dict[str, dict[str, str]]:
+    """Normalize the four period outfits while ignoring malformed entries."""
+    if not isinstance(value, dict):
+        return {}
+
+    aliases = {
+        "早上": "morning",
+        "上午": "morning",
+        "中午": "noon",
+        "下午": "afternoon",
+        "晚上": "evening",
+        "夜晚": "evening",
+    }
+    result: dict[str, dict[str, str]] = {}
+    for key in OUTFIT_PERIODS:
+        raw = value.get(key)
+        if raw is None:
+            for alias, canonical in aliases.items():
+                if canonical == key and alias in value:
+                    raw = value[alias]
+                    break
+
+        if isinstance(raw, str):
+            style = ""
+            description = raw.strip()
+        elif isinstance(raw, dict):
+            style = str(raw.get("style", "") or "").strip()
+            description = str(
+                raw.get("description") or raw.get("outfit") or raw.get("text") or ""
+            ).strip()
+        else:
+            continue
+
+        if not description:
+            continue
+        result[key] = {
+            "style": style[:80],
+            "description": description[:500],
+        }
+    return result
+
+
 # =========================
 # 数据结构
 # =========================
@@ -56,6 +106,7 @@ class ScheduleData:
     date: str  # yyyy-mm-dd
     outfit_style: str = ""
     outfit: str = ""
+    outfits: dict[str, dict[str, str]] = field(default_factory=dict)
     schedule: str = ""
     timeline: list[dict[str, str]] = field(default_factory=list)
     image_prompt: str = ""
@@ -66,10 +117,14 @@ class ScheduleData:
     @classmethod
     def from_dict(cls, data: dict, *, date: str | None = None) -> "ScheduleData":
         """允许未来字段扩展"""
+        outfit = data.get("outfit", "")
+        outfit_style = data.get("outfit_style", "")
+        outfits = normalize_outfits(data.get("outfits"))
         return cls(
             date=str(data.get("date") or date or ""),
-            outfit_style=data.get("outfit_style", ""),
-            outfit=data.get("outfit", ""),
+            outfit_style=outfit_style,
+            outfit=outfit,
+            outfits=outfits,
             schedule=data.get("schedule", ""),
             timeline=normalize_timeline(data.get("timeline")),
             image_prompt=str(data.get("image_prompt", "") or "").strip(),

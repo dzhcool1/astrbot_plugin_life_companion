@@ -1,15 +1,21 @@
 # Life Companion for AstrBot
 
-一个独立的 AstrBot 生活状态插件。它每天生成一份连续、可执行的生活安排，并把穿搭、时间线和主要活动提供给对话与生图插件使用。
+一个独立的 AstrBot 生活状态插件。它每天生成一份连续、可执行的生活安排，并把早上、中午、下午、晚上的分时段穿搭、时间线和主要活动提供给对话与生图插件使用。
 
 ## 它解决什么问题
 
 - 以日期、节日、人格、历史日程和近期会话为上下文生成每日状态。
 - 强制模型返回结构化时间线，Bot 可以根据当前时间回答“现在在做什么”。
 - 自动生成 `image_prompt`，用于参考照自拍或今日生活照。
+- 每天生成四套分时段穿搭，按当前时间向对话和生图插件提供对应穿搭。
 - 生成失败时不污染缓存；重写会自动保留历史版本，支持回滚。
 - `get_life_context(allow_generate=False)` 是严格只读接口，生图插件读取缓存时不会额外消耗 LLM。
 - 独立使用 `astrbot_plugin_life_companion` 数据目录，不覆盖其他日程插件。
+
+分时段穿搭的时间范围为：早上 05:00-10:59，中午 11:00-13:59，下午
+14:00-17:59，晚上 18:00-次日 04:59。生图插件继续读取
+`get_life_context()["outfit"]`，该字段会根据调用时刻返回当前时段穿搭；完整四段数据在
+`get_life_context()["outfits"]` 中。
 
 ## 安装
 
@@ -59,7 +65,13 @@ integrations/gitee_aiimg_life_companion.patch
 ```json
 {
   "outfit_style": "...",
-  "outfit": "...",
+  "outfit": "全天穿搭概览...",
+  "outfits": {
+    "morning": {"style": "...", "description": "..."},
+    "noon": {"style": "...", "description": "..."},
+    "afternoon": {"style": "...", "description": "..."},
+    "evening": {"style": "...", "description": "..."}
+  },
   "schedule": "...",
   "timeline": [{"time": "08:00", "activity": "...", "location": "..."}],
   "image_prompt": "..."

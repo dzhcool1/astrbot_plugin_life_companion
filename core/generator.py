@@ -11,7 +11,14 @@ from astrbot.api import logger
 from astrbot.core.config.astrbot_config import AstrBotConfig
 from astrbot.core.star.context import Context
 
-from .data import ScheduleData, ScheduleDataManager, normalize_timeline
+from .data import (
+    OUTFIT_PERIOD_LABELS,
+    OUTFIT_PERIODS,
+    ScheduleData,
+    ScheduleDataManager,
+    normalize_outfits,
+    normalize_timeline,
+)
 
 _STYLE_PREFIX_RE = re.compile(
     r"^\s*(?:【?风格】?|\[?风格\]?)\s*[:：]\s*(?P<style>.+?)(?:\n|$)"
@@ -79,6 +86,7 @@ class SchedulerGenerator:
                 ctx,
                 enforce_style=enforce_style,
                 manual_extra=manual_extra,
+                require_period_outfits=True,
             )
             for attempt in range(1, self._STYLE_ENFORCE_RETRIES + 1):
                 if ok:
@@ -96,6 +104,7 @@ class SchedulerGenerator:
                     ctx,
                     enforce_style=enforce_style,
                     manual_extra=manual_extra,
+                    require_period_outfits=True,
                 )
 
             if not ok or not payload:
@@ -410,7 +419,7 @@ class SchedulerGenerator:
                 "- 如果用户补充要求与上文随机创意池或模板中的穿搭风格冲突，必须以用户补充要求为准。\n"
                 "- 不得忽略、替换、弱化或用随机创意池覆盖用户补充要求中的具体衣物、场景和活动。\n"
                 "- 你必须只输出 JSON 对象本体（不要 Markdown/代码块/解释）。\n"
-                '- JSON 必须包含字段 "outfit_style"、"outfit"、"schedule"。\n'
+                '- JSON 必须包含字段 "outfit_style"、"outfit"、"outfits"、"schedule"。\n'
                 '- 当用户指定了具体穿搭时，"outfit" 必须直接包含这些具体穿搭元素。\n'
             )
         elif ctx.outfit_style:
@@ -421,6 +430,15 @@ class SchedulerGenerator:
                 f"- JSON 必须包含字段 \"outfit_style\"，且其值必须严格等于 \"{ctx.outfit_style}\"。\n"
                 f"- 字段 \"outfit\" 的第一行必须以 \"风格：{ctx.outfit_style}\" 开头。\n"
             )
+
+        prompt += (
+            "\n\n## 分时段穿搭要求（必须严格遵循）\n"
+            "- 每天只规划一次，但必须分别规划早上、中午、下午、晚上四套穿搭。\n"
+            "- JSON 必须包含 outfits 对象，且必须有 morning、noon、afternoon、evening 四个键。\n"
+            "- outfits 每个键的值必须是包含 style 和 description 的对象；四个时段应根据活动和场景有所区别，不要复制同一套。\n"
+            "- 四套穿搭整体配色和人物身份要连贯，优先考虑真实、舒适、适合日常活动的搭配。\n"
+            "- outfit 仍需填写全天穿搭概览，第一行继续遵循上面的风格约束。\n"
+        )
 
         return prompt
 
@@ -562,6 +580,7 @@ class SchedulerGenerator:
         *,
         enforce_style: bool = True,
         manual_extra: str = "",
+        require_period_outfits: bool = False,
     ) -> tuple[bool, str]:
         if not payload:
             return False, "未能解析出 JSON 对象"
@@ -572,6 +591,13 @@ class SchedulerGenerator:
             return False, "outfit 不能为空"
         if not schedule:
             return False, "schedule 不能为空"
+
+        period_outfits = normalize_outfits(payload.get("outfits"))
+        if require_period_outfits:
+            missing = [period for period in OUTFIT_PERIODS if period not in period_outfits]
+            if missing:
+                labels = ", ".join(OUTFIT_PERIOD_LABELS[period] for period in missing)
+                return False, f"outfits 缺少时段：{labels}"
 
         requirement_errors = self._manual_requirement_errors(payload, manual_extra)
         if requirement_errors:
@@ -653,8 +679,9 @@ class SchedulerGenerator:
             f"校验原因：{reason}\n"
             f"必须使用穿搭风格：{required}\n\n"
             "请只输出 JSON 对象本体，不要 Markdown，不要解释。\n"
-            "输出 JSON 必须包含字段：outfit_style、outfit、schedule。\n"
+            "输出 JSON 必须包含字段：outfit_style、outfit、outfits、schedule。\n"
             f"其中 outfit_style 必须严格等于 \"{required}\"；outfit 第一行必须以 \"风格：{required}\" 开头。\n\n"
+            "同时必须补齐 outfits.morning、outfits.noon、outfits.afternoon、outfits.evening 四套穿搭。\n"
             "你之前的输出（供参考，可能不合规）：\n"
             f"{bad_text}\n"
         )
@@ -671,7 +698,8 @@ class SchedulerGenerator:
             "- 用户补充要求高于随机创意池、穿搭风格、日程类型和历史日程。\n"
             "- 不得忽略、替换或弱化用户指定的具体穿搭、场景和活动。\n"
             "- 请只输出 JSON 对象本体，不要 Markdown，不要解释。\n"
-            '- 输出 JSON 必须包含字段：outfit_style、outfit、schedule。\n\n'
+            '- 输出 JSON 必须包含字段：outfit_style、outfit、outfits、schedule。\n\n'
+            '- 如果没有特别指定，仍需补齐 outfits 的 morning、noon、afternoon、evening 四个时段。\n\n'
             "你之前的输出（供参考，可能不合规）：\n"
             f"{bad_text}\n"
         )
@@ -692,6 +720,7 @@ class SchedulerGenerator:
             outfit_style = str(payload.get("outfit_style", "")).strip() or (
                 ctx.outfit_style or ""
             )
+        outfits = normalize_outfits(payload.get("outfits"))
         timeline = normalize_timeline(payload.get("timeline"))
         image_prompt = str(payload.get("image_prompt", "") or "").strip()
         if not image_prompt:
@@ -700,6 +729,7 @@ class SchedulerGenerator:
             date=date_str,
             outfit_style=outfit_style,
             outfit=outfit,
+            outfits=outfits,
             schedule=schedule,
             timeline=timeline,
             image_prompt=image_prompt[:800],

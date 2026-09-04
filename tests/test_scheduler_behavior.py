@@ -90,9 +90,19 @@ def _install_astrbot_stubs():
 
 _install_astrbot_stubs()
 
-from core.data import ScheduleData, ScheduleDataManager, normalize_timeline  # noqa: E402
+from core.data import (  # noqa: E402
+    OUTFIT_PERIODS,
+    ScheduleData,
+    ScheduleDataManager,
+    normalize_timeline,
+)
 from core.generator import ScheduleContext, SchedulerGenerator  # noqa: E402
-from core.utils import build_character_state_injection, select_current_activity  # noqa: E402
+from core.utils import (  # noqa: E402
+    build_character_state_injection,
+    get_outfit_period,
+    select_current_activity,
+    select_current_outfit,
+)
 
 
 class _ConversationManager:
@@ -570,13 +580,39 @@ class SchedulerBehaviorTest(unittest.IsolatedAsyncioTestCase):
         self.assertIn("当前状态: 未解析到具体时间点", inject_text)
         self.assertIn("今日日程: 上午整理房间，下午在家看书。", inject_text)
 
+    def test_character_state_injection_uses_current_period_outfit(self):
+        inject_text = build_character_state_injection(
+            "全天回退穿搭",
+            "15:00 去图书馆",
+            outfits={
+                "afternoon": {
+                    "style": "校园休闲风",
+                    "description": "灰蓝外套搭配直筒牛仔裤。",
+                }
+            },
+            now=datetime.datetime(2026, 5, 24, 15),
+        )
+
+        self.assertIn("时段：下午", inject_text)
+        self.assertIn("灰蓝外套搭配直筒牛仔裤", inject_text)
+        self.assertIn("今日分时段穿搭", inject_text)
+
     async def test_manual_extra_repairs_when_output_ignores_requirement(self):
         generator, provider = self._generator(
             [
-                '{"outfit_style":"用户指定","outfit":"白色T恤","schedule":"下午去喝茶"}',
+                ('{"outfit_style":"用户指定","outfit":"白色T恤",'
+                 '"outfits":{"morning":{"style":"校园风","description":"白色T恤。"},'
+                 '"noon":{"style":"校园风","description":"白色T恤。"},'
+                 '"afternoon":{"style":"校园风","description":"白色T恤。"},'
+                 '"evening":{"style":"校园风","description":"白色T恤。"}},'
+                 '"schedule":"下午去喝茶"}'),
                 (
                     '{"outfit_style":"用户指定",'
                     '"outfit":"黑丝和吊带裙",'
+                    '"outfits":{"morning":{"style":"用户指定","description":"黑丝和吊带裙"},'
+                    '"noon":{"style":"用户指定","description":"黑丝和吊带裙"},'
+                    '"afternoon":{"style":"用户指定","description":"黑丝和吊带裙"},'
+                    '"evening":{"style":"用户指定","description":"黑丝和吊带裙"}},'
                     '"schedule":"下午穿黑丝和吊带裙去喝茶"}'
                 ),
             ]
@@ -599,6 +635,10 @@ class SchedulerBehaviorTest(unittest.IsolatedAsyncioTestCase):
                 (
                     '{"outfit_style":"甜酷混搭风",'
                     '"outfit":"风格：甜酷混搭风\\n黑色短外套搭配短裙。",'
+                    '"outfits":{"morning":{"style":"校园休闲风","description":"白T恤搭配牛仔裤。"},'
+                    '"noon":{"style":"清爽少女风","description":"薄荷绿开衫搭配白裙。"},'
+                    '"afternoon":{"style":"甜酷混搭风","description":"短外套搭配短裙。"},'
+                    '"evening":{"style":"温柔风","description":"针织上衣搭配长裙。"}},'
                     '"schedule":"09:30 出门散步"}'
                 ),
             ]
@@ -614,6 +654,38 @@ class SchedulerBehaviorTest(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(data.status, "failed")
         self.assertEqual(len(provider.prompts), 2)
+
+    async def test_normal_generation_requires_four_period_outfits(self):
+        generator, provider = self._generator(
+            [
+                '{"outfit_style":"甜酷混搭风","outfit":"风格：甜酷混搭风\\n短外套。","schedule":"09:30 出门散步"}',
+                '{"outfit_style":"甜酷混搭风","outfit":"风格：甜酷混搭风\\n短外套。","schedule":"09:30 出门散步"}',
+                '{"outfit_style":"甜酷混搭风","outfit":"风格：甜酷混搭风\\n短外套。","schedule":"09:30 出门散步"}',
+            ]
+        )
+        data = await generator.generate_schedule(datetime.datetime(2026, 5, 24), None)
+
+        self.assertEqual(data.status, "failed")
+        self.assertEqual(len(provider.prompts), 3)
+
+    def test_period_outfit_selection_uses_current_time(self):
+        outfits = {
+            "morning": {"style": "早上风格", "description": "早上穿搭"},
+            "noon": {"style": "中午风格", "description": "中午穿搭"},
+            "afternoon": {"style": "下午风格", "description": "下午穿搭"},
+            "evening": {"style": "晚上风格", "description": "晚上穿搭"},
+        }
+
+        self.assertEqual(get_outfit_period(8), "morning")
+        self.assertEqual(get_outfit_period(12), "noon")
+        self.assertEqual(get_outfit_period(16), "afternoon")
+        self.assertEqual(get_outfit_period(21), "evening")
+        self.assertIn(
+            "下午穿搭",
+            select_current_outfit(
+                outfits, "全天回退穿搭", now=datetime.datetime(2026, 5, 24, 16)
+            ),
+        )
 
     def test_timeline_is_normalized_and_sorted_for_external_plugins(self):
         timeline = normalize_timeline(
@@ -685,6 +757,43 @@ class SchedulerBehaviorTest(unittest.IsolatedAsyncioTestCase):
         result = await plugin.get_life_context(allow_generate=False)
         self.assertEqual(result, {})
         self.assertFalse(called)
+
+    async def test_life_context_exposes_current_outfit_for_image_plugin(self):
+        sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+        from astrbot_plugin_life_companion.main import LifeCompanionPlugin
+
+        root = Path(tempfile.mkdtemp())
+        try:
+            plugin = object.__new__(LifeCompanionPlugin)
+            plugin.data_mgr = ScheduleDataManager(root / "data.json")
+            plugin.generator = object()
+            plugin.config = {"schedule_time": "00:00"}
+            plugin.data_mgr.set(
+                ScheduleData(
+                    date=datetime.date.today().isoformat(),
+                    outfit="全天概览",
+                    outfits={
+                        "morning": {"style": "早上风格", "description": "早上穿搭"},
+                        "noon": {"style": "中午风格", "description": "中午穿搭"},
+                        "afternoon": {"style": "下午风格", "description": "下午穿搭"},
+                        "evening": {"style": "晚上风格", "description": "晚上穿搭"},
+                    },
+                    schedule="15:00 去图书馆",
+                    image_prompt="生活照画面",
+                )
+            )
+
+            result = await plugin.get_life_context(
+                allow_generate=False, date=datetime.date.today()
+            )
+
+            self.assertEqual(set(result["outfits"]), set(OUTFIT_PERIODS))
+            self.assertIn(result["outfits"][result["current_outfit_period"]]["description"], result["outfit"])
+            self.assertIn(result["outfit"], result["image_prompt"])
+        finally:
+            import shutil
+
+            shutil.rmtree(root)
 
 
 if __name__ == "__main__":
