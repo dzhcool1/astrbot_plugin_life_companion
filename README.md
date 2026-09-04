@@ -31,7 +31,7 @@ pip install -r requirements.txt
 
 本插件已提供 `今日生活照` 命令，调用 `astrbot_plugin_life_companion_image` 的生活自拍链路。使用前请先安装并启用该插件，在生图插件中配置自拍参考照。
 
-使用 `astrbot_plugin_life_companion_image` 时，图片任务会与符合当前人设、上下文和用户语气的自然承接话并行处理，不再发送固定的技术提示。
+使用 `astrbot_plugin_life_companion_image` 时，会先发送一条符合当前人设、上下文和用户语气的自然承接话，再开始图片请求，不再发送固定的技术提示。
 
 生活状态通过 `get_life_context(allow_generate=False)` 提供给该插件；本插件不会读取或回退到旧生图插件的配置文件。
 
