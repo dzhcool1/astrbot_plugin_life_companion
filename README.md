@@ -27,9 +27,11 @@ pip install -r requirements.txt
 
 如果使用的是 Docker，插件目录通常对应宿主机的 `/root/data/plugins/astrbot_plugin_life_companion`。
 
-## 与 gitee_aiimg 自拍适配
+## 与生图插件适配
 
-本插件已提供 `今日生活照` 命令，调用已安装的 `astrbot_plugin_gitee_aiimg` 自拍链路。使用前请先在生图插件中配置自拍参考照。
+本插件已提供 `今日生活照` 命令，优先调用 `astrbot_plugin_life_companion_image` 的生活自拍链路；未安装时兼容已安装的 `astrbot_plugin_gitee_aiimg`。使用前请先在生图插件中配置自拍参考照。
+
+使用 `astrbot_plugin_life_companion_image` 时，图片任务会与符合当前人设、上下文和用户语气的自然承接话并行处理，不再发送固定的技术提示。
 
 为了让生图插件的普通 `/自拍` 也自动读取本插件的状态，请应用仓库中的：
 

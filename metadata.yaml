@@ -1,7 +1,7 @@
 name: astrbot_plugin_life_companion
 display_name: Life Companion 生活伙伴
 desc: "为 AstrBot 维护连续的每日生活状态：结合日期、节日、历史日程和近期对话生成穿搭、结构化时间线与生活照提示词，并注入对话上下文；可被兼容的生图插件只读调用。"
-version: v1.0.0
+version: v1.0.1
 author: dzhcool1
 astrbot_version: ">=4.16.0,<5"
 repo: "https://github.com/dzhcool1/astrbot_plugin_life_companion"

@@ -319,17 +319,29 @@ class LifeCompanionPlugin(Star):
         if not callable(get_registered_star):
             yield event.plain_result("未找到 gitee_aiimg 生图插件")
             return
-        metadata = get_registered_star("astrbot_plugin_gitee_aiimg")
-        image_plugin = getattr(metadata, "star_cls", None)
-        handler = getattr(image_plugin, "_do_selfie", None)
+        image_plugin = None
+        handler = None
+        for plugin_name in (
+            "astrbot_plugin_life_companion_image",
+            "astrbot_plugin_gitee_aiimg",
+        ):
+            try:
+                metadata = get_registered_star(plugin_name)
+            except Exception:
+                continue
+            image_plugin = getattr(metadata, "star_cls", None)
+            handler = getattr(image_plugin, "generate_life_photo", None)
+            if not callable(handler):
+                handler = getattr(image_plugin, "_do_selfie", None)
+            if callable(handler):
+                break
         if not callable(handler):
-            yield event.plain_result("当前 gitee_aiimg 版本不支持自拍调用")
+            yield event.plain_result("当前生图插件不支持生活照调用")
             return
         prompt = context.get("image_prompt") or (
             f"今日生活照，穿着：{context.get('outfit', '')}；"
             f"活动场景：{context.get('schedule', '')}"
         )
-        yield event.plain_result("正在根据今日日程生成生活照...")
         try:
             result = handler(event, prompt)
             if inspect.isawaitable(result):
