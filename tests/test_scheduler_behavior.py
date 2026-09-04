@@ -795,6 +795,42 @@ class SchedulerBehaviorTest(unittest.IsolatedAsyncioTestCase):
 
             shutil.rmtree(root)
 
+    async def test_life_photo_only_uses_current_image_plugin(self):
+        sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+        from astrbot_plugin_life_companion.main import LifeCompanionPlugin
+
+        plugin = object.__new__(LifeCompanionPlugin)
+        requested_plugins = []
+        calls = []
+
+        async def get_context(*, allow_generate):
+            self.assertTrue(allow_generate)
+            return {"image_prompt": "窗边喝咖啡"}
+
+        async def generate_life_photo(event, prompt):
+            calls.append((event, prompt))
+
+        class _Context:
+            def get_registered_star(self, name):
+                requested_plugins.append(name)
+                if name != "astrbot_plugin_life_companion_image":
+                    raise AssertionError(f"unexpected plugin lookup: {name}")
+                return types.SimpleNamespace(
+                    star_cls=types.SimpleNamespace(
+                        generate_life_photo=generate_life_photo
+                    )
+                )
+
+        plugin.context = _Context()
+        plugin.get_life_context = get_context
+        event = object()
+
+        results = [result async for result in plugin.life_photo(event)]
+
+        self.assertEqual(requested_plugins, ["astrbot_plugin_life_companion_image"])
+        self.assertEqual(calls, [(event, "窗边喝咖啡")])
+        self.assertEqual(results, [])
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -2,6 +2,12 @@
 
 本文件记录 `astrbot_plugin_life_companion` 的重要变更。
 
+## v1.0.2 - 2026-09-04
+
+### 修复
+
+- `今日生活照` 只调用 `astrbot_plugin_life_companion_image`，移除旧生图插件和旧配置文件的运行时回退路径。
+
 ## v1.0.1 - 2026-09-04
 
 ### 修复

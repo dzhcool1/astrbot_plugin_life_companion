@@ -29,17 +29,11 @@ pip install -r requirements.txt
 
 ## 与生图插件适配
 
-本插件已提供 `今日生活照` 命令，优先调用 `astrbot_plugin_life_companion_image` 的生活自拍链路；未安装时兼容已安装的 `astrbot_plugin_gitee_aiimg`。使用前请先在生图插件中配置自拍参考照。
+本插件已提供 `今日生活照` 命令，调用 `astrbot_plugin_life_companion_image` 的生活自拍链路。使用前请先安装并启用该插件，在生图插件中配置自拍参考照。
 
 使用 `astrbot_plugin_life_companion_image` 时，图片任务会与符合当前人设、上下文和用户语气的自然承接话并行处理，不再发送固定的技术提示。
 
-为了让生图插件的普通 `/自拍` 也自动读取本插件的状态，请应用仓库中的：
-
-```text
-integrations/gitee_aiimg_life_companion.patch
-```
-
-该补丁针对 `gitee_aiimg v5.1.30`，修改范围只有生活上下文发现和自拍提示词构造；生图插件不存在或不兼容时仍会自动降级。插件升级后如果补丁冲突，应重新检查对应方法，而不是覆盖整个生图插件。服务器中应用时在容器内执行：`patch -p0 < /tmp/gitee_aiimg_life_companion.patch`。
+生活状态通过 `get_life_context(allow_generate=False)` 提供给该插件；本插件不会读取或回退到旧生图插件的配置文件。
 
 ## 命令
 

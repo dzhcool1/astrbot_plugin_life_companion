@@ -310,33 +310,23 @@ class LifeCompanionPlugin(Star):
 
     @filter.command("今日生活照", alias={"life photo"})
     async def life_photo(self, event: AstrMessageEvent):
-        """Pass the prepared prompt to the installed gitee_aiimg selfie chain."""
+        """Pass the prepared prompt to the installed Life Companion Image plugin."""
         context = await self.get_life_context(allow_generate=True)
         if not context:
             yield event.plain_result("今日还没有可用日程，无法准备生活照")
             return
         get_registered_star = getattr(self.context, "get_registered_star", None)
         if not callable(get_registered_star):
-            yield event.plain_result("未找到 gitee_aiimg 生图插件")
+            yield event.plain_result("未找到生活照生图插件")
             return
-        image_plugin = None
-        handler = None
-        for plugin_name in (
-            "astrbot_plugin_life_companion_image",
-            "astrbot_plugin_gitee_aiimg",
-        ):
-            try:
-                metadata = get_registered_star(plugin_name)
-            except Exception:
-                continue
-            image_plugin = getattr(metadata, "star_cls", None)
-            handler = getattr(image_plugin, "generate_life_photo", None)
-            if not callable(handler):
-                handler = getattr(image_plugin, "_do_selfie", None)
-            if callable(handler):
-                break
+        try:
+            metadata = get_registered_star("astrbot_plugin_life_companion_image")
+        except Exception:
+            metadata = None
+        image_plugin = getattr(metadata, "star_cls", None)
+        handler = getattr(image_plugin, "generate_life_photo", None)
         if not callable(handler):
-            yield event.plain_result("当前生图插件不支持生活照调用")
+            yield event.plain_result("当前未安装或未启用生活照生图插件")
             return
         prompt = context.get("image_prompt") or (
             f"今日生活照，穿着：{context.get('outfit', '')}；"
